@@ -1,5 +1,7 @@
 import axios from 'axios'
 import { API_URL } from '../config'
+import { useAuthStore } from '../store/authStore'
+import { authService } from './authService'
 
 export const api = axios.create({
   baseURL: API_URL,
@@ -7,8 +9,40 @@ export const api = axios.create({
   timeout: 15000,
 })
 
-// TODO 1.3 (Autenticación): agregue dos interceptores a 'api'.
-// a) De petición: si hay accessToken en el store, enviarlo en Authorization: Bearer <token>.
-// b) De respuesta: ante un 401 (token vencido) intente UNA sola vez renovar con authService.refresh,
-//    guarde los tokens nuevos con setTokens y repita la petición original. Si la renovación falla,
-//    llame a logout() y lleve al usuario a /login.
+api.interceptors.request.use((config) => {
+  const accessToken = useAuthStore.getState().accessToken
+  if (accessToken && config.headers) {
+    config.headers.Authorization = `Bearer ${accessToken}`
+  }
+  return config
+})
+
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config
+
+    if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
+      originalRequest._retry = true
+
+      try {
+        const refreshToken = useAuthStore.getState().refreshToken
+        if (!refreshToken) throw new Error('No existe refresh token')
+
+        const nextTokens = await authService.refresh(refreshToken)
+        useAuthStore.getState().setTokens(nextTokens.accessToken, nextTokens.refreshToken)
+
+        originalRequest.headers = originalRequest.headers ?? {}
+        originalRequest.headers.Authorization = `Bearer ${nextTokens.accessToken}`
+
+        return api(originalRequest)
+      } catch (refreshError) {
+        useAuthStore.getState().logout()
+        window.location.assign('/login')
+        return Promise.reject(refreshError)
+      }
+    }
+
+    return Promise.reject(error)
+  },
+)
